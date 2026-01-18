@@ -1,0 +1,79 @@
+---
+# Pod Template for Jenkins Kubernetes Plugin
+# This is a reference template - Jenkins will create pods dynamically
+apiVersion: v1
+kind: Pod
+metadata:
+  name: jenkins-agent
+  namespace: jenkins-agents-hungpq52
+  labels:
+    jenkins: agent
+    jenkins/label: default-agent
+spec:
+  serviceAccountName: jenkins-agent
+  
+  # Required for pulling from registry.redhat.io
+  imagePullSecrets:
+    - name: redhat-pull-secret
+  
+  containers:
+  # JNLP + OC CLI container (2-in-1)
+  - name: jnlp
+    image: registry.redhat.io/ocp-tools-4/jenkins-agent-base-rhel8:latest
+    imagePullPolicy: IfNotPresent
+    env:
+    - name: HOME
+      value: /home/jenkins
+    # Jenkins will automatically inject these
+    - name: JENKINS_URL
+      value: "${JENKINS_URL}"
+    - name: JENKINS_SECRET
+      value: "${JENKINS_SECRET}"
+    - name: JENKINS_AGENT_NAME
+      value: "${JENKINS_AGENT_NAME}"
+    resources:
+      requests:
+        memory: "512Mi"
+        cpu: "500m"
+      limits:
+        memory: "1Gi"
+        cpu: "1000m"
+    volumeMounts:
+    - name: workspace
+      mountPath: /home/jenkins/agent
+    - name: home
+      mountPath: /home/jenkins
+  
+  # Maven container for building
+  - name: maven
+    image: maven:3.9-eclipse-temurin-17
+    imagePullPolicy: IfNotPresent
+    command:
+    - cat
+    tty: true
+    env:
+    - name: HOME
+      value: /home/jenkins
+    - name: MAVEN_OPTS
+      value: "-Dmaven.repo.local=/home/jenkins/.m2/repository"
+    resources:
+      requests:
+        memory: "1Gi"
+        cpu: "500m"
+      limits:
+        memory: "2Gi"
+        cpu: "1000m"
+    volumeMounts:
+    - name: workspace
+      mountPath: /home/jenkins/agent
+    - name: home
+      mountPath: /home/jenkins
+  
+  volumes:
+  - name: workspace
+    persistentVolumeClaim:
+      claimName: jenkins-agent-workspace
+  - name: home
+    emptyDir: {}
+  
+  restartPolicy: Never

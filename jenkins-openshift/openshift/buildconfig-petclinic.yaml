@@ -1,0 +1,24 @@
+---
+# BuildConfig for Spring Petclinic
+# Uses Docker strategy with Buildah internally
+# Pushes to external Nexus registry
+apiVersion: build.openshift.io/v1
+kind: BuildConfig
+metadata:
+  name: petclinic
+  namespace: petclinic-hungpq52
+  labels:
+    app: petclinic
+spec:
+  source:
+    type: Binary
+  strategy:
+    type: Docker
+    dockerStrategy:
+      dockerfilePath: Dockerfile
+  output:
+    to:
+      kind: DockerImage
+      name: nexus.apps.s68/petclinic:latest
+    pushSecret:
+      name: nexus-push-secret

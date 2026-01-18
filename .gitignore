@@ -1,0 +1,45 @@
+# IDE and Editor
+.vscode/
+.idea/
+*.swp
+*.swo
+*~
+
+# OS
+.DS_Store
+Thumbs.db
+
+# Logs
+*.log
+
+# Temporary files
+*.tmp
+*.bak
+
+# Credentials (never commit secrets!)
+*secret*.yaml
+*.key
+*.pem
+*.crt
+
+# Build artifacts
+target/
+*.jar
+*.war
+*.class
+
+# Maven
+.m2/
+
+# Python
+__pycache__/
+*.pyc
+*.pyo
+*.egg-info/
+venv/
+.env
+
+# Node
+node_modules/
+npm-debug.log
+yarn-error.log

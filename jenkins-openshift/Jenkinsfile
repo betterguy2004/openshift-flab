@@ -1,0 +1,156 @@
+// Jenkins Pipeline for Spring Petclinic on OpenShift
+// Uses Jenkins Kubernetes Plugin for dynamic agent provisioning
+pipeline {
+  agent {
+    kubernetes {
+      namespace 'jenkins-agents-hungpq52'
+      yaml '''
+apiVersion: v1
+kind: Pod
+spec:
+  serviceAccountName: jenkins-agent
+  imagePullSecrets:
+    - name: redhat-pull-secret
+  containers:
+  - name: jnlp
+    image: registry.redhat.io/ocp-tools-4/jenkins-agent-base-rhel8:latest
+    env:
+    - name: HOME
+      value: /home/jenkins
+    volumeMounts:
+    - name: workspace
+      mountPath: /home/jenkins/agent
+    - name: home
+      mountPath: /home/jenkins
+  - name: maven
+    image: maven:3.9-eclipse-temurin-17
+    command: ["cat"]
+    tty: true
+    env:
+    - name: HOME
+      value: /home/jenkins
+    - name: MAVEN_OPTS
+      value: "-Dmaven.repo.local=/home/jenkins/.m2/repository"
+    volumeMounts:
+    - name: workspace
+      mountPath: /home/jenkins/agent
+    - name: home
+      mountPath: /home/jenkins
+  volumes:
+  - name: workspace
+    persistentVolumeClaim:
+      claimName: jenkins-agent-workspace
+  - name: home
+    emptyDir: {}
+      '''
+    }
+  }
+  
+  environment {
+    APP_NS = 'petclinic-hungpq52'
+    NEXUS_REGISTRY = 'nexus.apps.s68'
+    IMAGE_NAME = 'petclinic'
+    IMAGE_TAG = "${BUILD_NUMBER}"
+  }
+  
+  stages {
+    stage('Checkout') {
+      steps {
+        echo '=== Checking out Spring Petclinic from GitHub ==='
+        git url: 'https://github.com/spring-projects/spring-petclinic', branch: 'main'
+      }
+    }
+    
+    stage('Maven Build') {
+      steps {
+        container('maven') {
+          echo '=== Building with Maven ==='
+          sh '''
+            mvn -version
+            mvn -B -DskipTests clean package
+          '''
+        }
+      }
+    }
+    
+    stage('Build & Push Image') {
+      steps {
+        container('jnlp') {
+          echo '=== Building and pushing image to Nexus via OpenShift BuildConfig ==='
+          sh """
+            oc version
+            oc project ${APP_NS}
+            
+            # Start build from current directory (contains Dockerfile and JAR)
+            oc start-build petclinic \
+              --from-dir=. \
+              --follow \
+              --wait \
+              -n ${APP_NS}
+            
+            echo "Image pushed to ${NEXUS_REGISTRY}/${IMAGE_NAME}:latest"
+          """
+        }
+      }
+    }
+    
+    stage('Deploy') {
+      steps {
+        container('jnlp') {
+          echo '=== Deploying to OpenShift ==='
+          sh """
+            # Create deployment if not exists
+            oc new-app ${NEXUS_REGISTRY}/${IMAGE_NAME}:latest \
+              --name=petclinic \
+              -n ${APP_NS} || echo "Deployment already exists"
+            
+            # Expose service if not exists
+            oc expose svc/petclinic -n ${APP_NS} || echo "Route already exists"
+            
+            # Wait for rollout to complete
+            oc rollout status deployment/petclinic -n ${APP_NS} --timeout=5m
+          """
+        }
+      }
+    }
+    
+    stage('Verify') {
+      steps {
+        container('jnlp') {
+          echo '=== Verifying deployment ==='
+          sh """
+            # Get route URL
+            ROUTE=\$(oc get route petclinic -n ${APP_NS} -o jsonpath='{.spec.host}')
+            echo "Application URL: http://\${ROUTE}"
+            
+            # Wait for application to be ready
+            sleep 10
+            
+            # Test HTTP endpoint
+            HTTP_CODE=\$(curl -s -o /dev/null -w "%{http_code}" http://\${ROUTE}/)
+            echo "HTTP Response Code: \${HTTP_CODE}"
+            
+            if [ "\${HTTP_CODE}" = "200" ]; then
+              echo "✅ Application is accessible"
+            else
+              echo "❌ Application returned HTTP \${HTTP_CODE}"
+              exit 1
+            fi
+          """
+        }
+      }
+    }
+  }
+  
+  post {
+    always {
+      echo '=== Pipeline execution completed ==='
+    }
+    success {
+      echo '✅ Pipeline succeeded! Petclinic deployed successfully.'
+    }
+    failure {
+      echo '❌ Pipeline failed! Check logs for details.'
+    }
+  }
+}

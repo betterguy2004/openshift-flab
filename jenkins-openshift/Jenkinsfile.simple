@@ -1,0 +1,31 @@
+// Jenkinsfile đơn giản - Chỉ kubectl get pods
+pipeline {
+    agent {
+        kubernetes {
+            namespace 'jenkins'
+            serviceAccount 'jenkins-agent'
+            yaml """
+apiVersion: v1
+kind: Pod
+spec:
+  serviceAccountName: jenkins-agent
+  containers:
+  - name: kubectl
+    # OpenShift Origin CLI từ quay.io (community image)
+    image: quay.io/openshift/origin-cli:latest
+    command: ['cat']
+    tty: true
+"""
+        }
+    }
+    
+    stages {
+        stage('Get Pods') {
+            steps {
+                container('kubectl') {
+                    sh 'kubectl get pods -n jenkins'
+                }
+            }
+        }
+    }
+}

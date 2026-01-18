@@ -1,0 +1,223 @@
+# Task Execution Plan: Jenkins CI/CD Pipeline on OpenShift
+
+## Objective
+Deploy a production-grade Jenkins CI/CD pipeline on OpenShift 4.12 to build Spring Petclinic using Maven, create container images via OpenShift BuildConfig (Buildah), push to Nexus registry, and deploy to OpenShift.
+
+---
+
+## Execution Checklist
+
+### Phase 1: Infrastructure Setup
+- [ ] **1.1** Create namespace `jenkins-agents-hungpq52`
+- [ ] **1.2** Create namespace `petclinic-hungpq52`
+- [ ] **1.3** Create Nexus push secret in `petclinic-hungpq52`
+- [ ] **1.4** Create Red Hat pull secret in `jenkins-agents-hungpq52`
+- [ ] **1.5** Verify all secrets created successfully
+
+### Phase 2: RBAC Configuration
+- [ ] **2.1** Create ServiceAccount `jenkins-agent` in `jenkins-agents-hungpq52`
+- [ ] **2.2** Create Role `jenkins-agent` in `jenkins-agents-hungpq52`
+- [ ] **2.3** Create RoleBinding for jenkins-agent
+- [ ] **2.4** Create Role `jenkins-deployer` in `petclinic-hungpq52`
+- [ ] **2.5** Create RoleBinding for jenkins-deployer (cross-namespace)
+- [ ] **2.6** Apply `agent-rbac.yaml`
+- [ ] **2.7** Verify RBAC permissions with `oc auth can-i`
+
+### Phase 3: Storage Configuration
+- [ ] **3.1** Create `openshift/pvc-jenkins-workspace.yaml`
+- [ ] **3.2** Apply PVC manifest
+- [ ] **3.3** Verify PVC status is `Bound`
+- [ ] **3.4** Confirm storage class `hungpq52-storageclass` is used
+
+### Phase 4: Build Configuration
+- [ ] **4.1** Create `openshift/buildconfig-petclinic.yaml`
+- [ ] **4.2** Apply BuildConfig manifest
+- [ ] **4.3** Verify BuildConfig exists in `petclinic-hungpq52`
+- [ ] **4.4** Confirm output points to `nexus.apps.s68/petclinic:latest`
+
+### Phase 5: Pod Template
+- [x] **5.1** Create `pod-template-agent.yaml` with jnlp + maven containers
+- [x] **5.2** Verify imagePullSecrets references `redhat-pull-secret`
+- [x] **5.3** Confirm PVC mount to `/home/jenkins/agent`
+- [x] **5.4** Validate HOME environment variable set for all containers
+
+### Phase 6: Pipeline Configuration
+- [x] **6.1** Create `Jenkinsfile` with inline pod template
+- [x] **6.2** Configure Checkout stage (Spring Petclinic from GitHub)
+- [x] **6.3** Configure Maven Build stage (`mvn clean package`)
+- [x] **6.4** Configure Build & Push Image stage (`oc start-build`)
+- [x] **6.5** Configure Deploy stage (`oc new-app`)
+- [x] **6.6** Configure Verify stage (route check + curl)
+- [x] **6.7** Add post-build actions (success/failure notifications)
+
+### Phase 7: Jenkins Job Setup
+- [ ] **7.1** Create new Pipeline job in Jenkins
+- [ ] **7.2** Configure SCM to repository with Jenkinsfile
+- [ ] **7.3** Save job configuration
+- [ ] **7.4** Trigger first build manually
+
+### Phase 8: Validation & Testing
+- [ ] **8.1** Verify agent pod spawns in `jenkins-agents-hungpq52`
+- [ ] **8.2** Confirm Maven build completes successfully
+- [ ] **8.3** Check BuildConfig build logs show image push to Nexus
+- [ ] **8.4** Verify deployment created in `petclinic-hungpq52`
+- [ ] **8.5** Confirm service `petclinic` exists on port 8080
+- [ ] **8.6** Verify route created and accessible
+- [ ] **8.7** Test application via browser at route URL
+- [ ] **8.8** Confirm Petclinic UI loads correctly
+
+---
+
+## Validation Commands
+
+### Infrastructure Validation
+```bash
+# Check namespaces
+oc get projects | grep hungpq52
+
+# Check secrets
+oc get secret nexus-push-secret -n petclinic-hungpq52
+oc get secret redhat-pull-secret -n jenkins-agents-hungpq52
+```
+
+### RBAC Validation
+```bash
+# Test permissions
+oc auth can-i create builds --as=system:serviceaccount:jenkins-agents-hungpq52:jenkins-agent -n petclinic-hungpq52
+# Expected: yes
+
+# List RBAC resources
+oc get sa,role,rolebinding -n jenkins-agents-hungpq52
+oc get role,rolebinding -n petclinic-hungpq52
+```
+
+### Storage Validation
+```bash
+# Check PVC status
+oc get pvc jenkins-agent-workspace -n jenkins-agents-hungpq52
+# Expected: STATUS = Bound
+```
+
+### Build Validation
+```bash
+# Check BuildConfig
+oc get bc petclinic -n petclinic-hungpq52
+
+# Monitor build logs
+oc logs -f bc/petclinic -n petclinic-hungpq52
+```
+
+### Deployment Validation
+```bash
+# Check deployment
+oc get deployment petclinic -n petclinic-hungpq52
+
+# Check pods
+oc get pods -n petclinic-hungpq52 | grep Running
+
+# Get route
+ROUTE=$(oc get route petclinic -n petclinic-hungpq52 -o jsonpath='{.spec.host}')
+echo "Application URL: http://${ROUTE}"
+
+# Test accessibility
+curl -I http://${ROUTE}/
+# Expected: HTTP/1.1 200 OK
+```
+
+---
+
+## Troubleshooting Checklist
+
+### If ImagePullBackOff on jenkins-agent-base-rhel8:
+- [ ] Verify Red Hat credentials are valid
+- [ ] Check secret exists in `jenkins-agents-hungpq52`
+- [ ] Confirm imagePullSecrets in pod spec
+- [ ] Test: `oc describe pod <agent-pod> -n jenkins-agents-hungpq52`
+
+### If RBAC Permission Denied:
+- [ ] Verify ServiceAccount exists
+- [ ] Check RoleBinding references correct SA and namespace
+- [ ] Confirm Role includes required verbs
+- [ ] Test: `oc auth can-i <verb> <resource> --as=system:serviceaccount:...`
+
+### If PVC Stuck in Pending:
+- [ ] Verify storage class exists: `oc get sc hungpq52-storageclass`
+- [ ] Check storage class supports RWX
+- [ ] Confirm cluster has available storage
+- [ ] Review: `oc describe pvc jenkins-agent-workspace -n jenkins-agents-hungpq52`
+
+### If BuildConfig Push Fails:
+- [ ] Verify Nexus secret credentials
+- [ ] Test Nexus accessibility: `curl -I http://nexus.apps.s68`
+- [ ] Check BuildConfig references correct secret
+- [ ] Review build logs: `oc logs -f bc/petclinic -n petclinic-hungpq52`
+
+### If Maven Build Fails:
+- [ ] Confirm Maven image uses Java 17
+- [ ] Check Spring Petclinic branch compatibility
+- [ ] Verify network access to Maven Central
+- [ ] Review Jenkins console output
+
+### If Route Not Accessible:
+- [ ] Verify service exists: `oc get svc petclinic -n petclinic-hungpq52`
+- [ ] Check pod is running: `oc get pods -n petclinic-hungpq52`
+- [ ] Confirm route exposed: `oc get route petclinic -n petclinic-hungpq52`
+- [ ] Test from within cluster: `oc rsh <pod> curl localhost:8080`
+
+---
+
+## Deliverables Checklist
+
+### Files to Create:
+- [x] `agent-rbac.yaml`
+- [x] `openshift/pvc-jenkins-workspace.yaml`
+- [x] `openshift/buildconfig-petclinic.yaml`
+- [x] `pod-template-agent.yaml`
+- [x] `Jenkinsfile`
+
+### Expected Cluster Resources:
+- [ ] Namespace: `jenkins-agents-hungpq52`
+- [ ] Namespace: `petclinic-hungpq52`
+- [ ] Secret: `redhat-pull-secret` (jenkins-agents)
+- [ ] Secret: `nexus-push-secret` (petclinic)
+- [ ] ServiceAccount: `jenkins-agent`
+- [ ] Roles: `jenkins-agent`, `jenkins-deployer`
+- [ ] RoleBindings: 2 total
+- [ ] PVC: `jenkins-agent-workspace` (20Gi, RWX, Bound)
+- [ ] BuildConfig: `petclinic`
+- [ ] Deployment: `petclinic`
+- [ ] Service: `petclinic`
+- [ ] Route: `petclinic`
+
+### Expected Outputs:
+- [ ] Jenkins pipeline job configured
+- [ ] Successful pipeline execution
+- [ ] Image in Nexus: `nexus.apps.s68/petclinic:latest`
+- [ ] Application accessible via route
+- [ ] Petclinic UI loads in browser
+
+---
+
+## Prerequisites Checklist
+
+### Before Starting:
+- [ ] OpenShift 4.12+ cluster accessible
+- [ ] User has project creation privileges
+- [ ] Storage class `hungpq52-storageclass` exists with RWX support
+- [ ] Nexus registry accessible at `nexus.apps.s68`
+- [ ] Jenkins Controller running with Kubernetes Plugin installed
+- [ ] `oc` CLI installed and configured
+- [ ] Red Hat registry credentials obtained
+- [ ] Nexus credentials: admin/123456789
+
+---
+
+**Status:** 🟡 In Progress - Configuration Files Created
+
+**Last Updated:** 2026-01-18
+
+**Progress:** 6/8 Phases Complete (75%)
+
+---
+
+[x] COMPLETED

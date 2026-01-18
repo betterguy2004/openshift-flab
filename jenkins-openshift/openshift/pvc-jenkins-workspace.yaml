@@ -1,0 +1,15 @@
+---
+# PersistentVolumeClaim for Jenkins Agent Workspace
+# Requires ReadWriteMany (RWX) access mode for shared workspace across multiple agent pods
+apiVersion: v1
+kind: PersistentVolumeClaim
+metadata:
+  name: jenkins-agent-workspace
+  namespace: jenkins-agents-hungpq52
+spec:
+  accessModes:
+    - ReadWriteMany
+  storageClassName: hungpq52-storageclass
+  resources:
+    requests:
+      storage: 20Gi

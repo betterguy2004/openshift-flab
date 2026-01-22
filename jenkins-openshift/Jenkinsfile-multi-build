@@ -38,16 +38,16 @@ spec:
       mountPath: /home/jenkins
   - name: kaniko
     image: gcr.io/kaniko-project/executor:debug
-    command: ["/busybox/cat"]
+    command: ["/busybox/sleep"]
+    args: ["99d"]
     tty: true
+    workingDir: /workspace
     env:
     - name: HOME
-      value: /home/jenkins
+      value: /workspace
     volumeMounts:
     - name: workspace
-      mountPath: /home/jenkins/agent
-    - name: home
-      mountPath: /home/jenkins
+      mountPath: /workspace
     - name: kaniko-secret
       mountPath: /kaniko/.docker
   - name: buildah
@@ -264,9 +264,26 @@ def buildWithKaniko() {
   container('kaniko') {
     echo '=== Building with Kaniko ==='
     sh """
+      # Verify /kaniko/executor exists (should not be overwritten by mounts)
+      if [ ! -f /kaniko/executor ]; then
+        echo "ERROR: /kaniko/executor not found!"
+        echo "This usually means a volume was mounted over /kaniko"
+        exit 1
+      fi
+      
+      # Copy build artifacts from agent workspace to writable /workspace
+      echo "Copying artifacts to /workspace..."
+      cp -r /home/jenkins/agent/* /workspace/ 2>/dev/null || true
+      cd /workspace
+      
+      # List files to verify
+      echo "Files in /workspace:"
+      ls -la
+      
+      # Run Kaniko executor
       /kaniko/executor \\
-        --context=\${PWD} \\
-        --dockerfile=Dockerfile \\
+        --context=/workspace \\
+        --dockerfile=/workspace/Dockerfile \\
         --destination=${FULL_IMAGE} \\
         --destination=${LATEST_IMAGE} \\
         --insecure \\

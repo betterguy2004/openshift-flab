@@ -74,11 +74,14 @@ spec:
     image: gcr.io/kaniko-project/executor:debug
     imagePullPolicy: IfNotPresent
     command:
-    - /busybox/cat
+    - /busybox/sleep
+    args:
+    - "99d"
     tty: true
+    workingDir: /workspace
     env:
     - name: HOME
-      value: /home/jenkins
+      value: /workspace
     resources:
       requests:
         memory: "512Mi"
@@ -88,9 +91,7 @@ spec:
         cpu: "1000m"
     volumeMounts:
     - name: workspace
-      mountPath: /home/jenkins/agent
-    - name: home
-      mountPath: /home/jenkins
+      mountPath: /workspace
     - name: kaniko-secret
       mountPath: /kaniko/.docker
   

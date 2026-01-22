@@ -37,7 +37,7 @@ spec:
     - name: home
       mountPath: /home/jenkins
   - name: buildah
-    image: quay.io/buildah/stable:latest
+    image: quay.io/buildah/stable:v1.40
     command: ["sleep"]
     args: ["99d"]
     tty: true
@@ -126,7 +126,6 @@ spec:
               --authfile=/home/jenkins/.docker/config.json \\
               ${FULL_IMAGE}
             
-            echo "✅ Image pushed to ${FULL_IMAGE}"
           """
         }
       }

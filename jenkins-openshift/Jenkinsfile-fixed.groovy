@@ -13,7 +13,7 @@ spec:
     - name: redhat-pull-secret
   containers:
   - name: jnlp
-    image: registry.redhat.io/ocp-tools-4/jenkins-agent-base-rhel8:latest
+    image: registry.redhat.io/ocp-tools-4/jenkins-agent-base-rhel8@sha256:d9ba10b836a4d2cebb9e8537b7a46202301432273b6d75cafb3f7d0815fc4558
     env:
     - name: HOME
       value: /home/jenkins
@@ -23,7 +23,7 @@ spec:
     - name: home
       mountPath: /home/jenkins
   - name: maven
-    image: maven:3.9-eclipse-temurin-17
+    image: maven:3.9-eclipse-temurin-25
     command: ["cat"]
     tty: true
     env:
@@ -41,13 +41,13 @@ spec:
     command: ["/busybox/sleep"]
     args: ["99d"]
     tty: true
-    workingDir: /workspace
+    workingDir: /home/jenkins/agent
     env:
     - name: HOME
-      value: /workspace
+      value: /home/jenkins
     volumeMounts:
     - name: workspace
-      mountPath: /workspace
+      mountPath: /home/jenkins/agent
     - name: kaniko-secret
       mountPath: /kaniko/.docker
   volumes:
@@ -70,11 +70,17 @@ spec:
     APP_NS = 'hungpq52-app'
     NEXUS_REGISTRY = 'registry.apps.ocp.bankhub.s68'
     IMAGE_NAME = 'petclinic-hungpq52'
-    IMAGE_TAG = "1"
+    IMAGE_TAG = "${BUILD_NUMBER}"
     FULL_IMAGE = "${NEXUS_REGISTRY}/${IMAGE_NAME}:${IMAGE_TAG}"
   }
   
   stages {
+    stage('Checkout') {
+      steps {
+        checkout scm
+      }
+    }
+
     stage('Test') {
       steps {
         container('jnlp') {
@@ -95,25 +101,20 @@ spec:
       steps {
         container('kaniko') {
           sh """
+            echo "Current directory: \$(pwd)"
+            echo "Files in workspace:"
+            ls -la
+            
             # Verify /kaniko/executor exists
             if [ ! -f /kaniko/executor ]; then
               echo "ERROR: /kaniko/executor not found!"
               exit 1
             fi
             
-            # Copy build artifacts to writable workspace
-            echo "Copying artifacts to /workspace..."
-            cp -r /home/jenkins/agent/* /workspace/ 2>/dev/null || true
-            cd /workspace
-            
-            # List files to verify
-            echo "Files in /workspace:"
-            ls -la
-            
             # Run Kaniko executor
             /kaniko/executor \\
-              --context=/workspace \\
-              --dockerfile=/workspace/Dockerfile \\
+              --context=\$(pwd) \\
+              --dockerfile=\$(pwd)/Dockerfile \\
               --destination=${FULL_IMAGE} \\
               --skip-tls-verify \\
               --insecure \\

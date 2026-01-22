@@ -1,0 +1,318 @@
+// Jenkins Pipeline for Spring Petclinic on OpenShift
+// Supports multiple build strategies: OpenShift BuildConfig, Kaniko, Buildah
+pipeline {
+  agent {
+    kubernetes {
+      namespace 'jenkins-agents-hungpq52'
+      yaml '''
+apiVersion: v1
+kind: Pod
+spec:
+  serviceAccountName: jenkins-agent
+  imagePullSecrets:
+    - name: redhat-pull-secret
+  containers:
+  - name: jnlp
+    image: registry.redhat.io/ocp-tools-4/jenkins-agent-base-rhel8:latest
+    env:
+    - name: HOME
+      value: /home/jenkins
+    volumeMounts:
+    - name: workspace
+      mountPath: /home/jenkins/agent
+    - name: home
+      mountPath: /home/jenkins
+  - name: maven
+    image: maven:3.9-eclipse-temurin-17
+    command: ["cat"]
+    tty: true
+    env:
+    - name: HOME
+      value: /home/jenkins
+    - name: MAVEN_OPTS
+      value: "-Dmaven.repo.local=/home/jenkins/.m2/repository"
+    volumeMounts:
+    - name: workspace
+      mountPath: /home/jenkins/agent
+    - name: home
+      mountPath: /home/jenkins
+  - name: kaniko
+    image: gcr.io/kaniko-project/executor:debug
+    command: ["/busybox/cat"]
+    tty: true
+    env:
+    - name: HOME
+      value: /home/jenkins
+    volumeMounts:
+    - name: workspace
+      mountPath: /home/jenkins/agent
+    - name: home
+      mountPath: /home/jenkins
+    - name: kaniko-secret
+      mountPath: /kaniko/.docker
+  - name: buildah
+    image: quay.io/buildah/stable:latest
+    command: ["cat"]
+    tty: true
+    securityContext:
+      privileged: true
+    env:
+    - name: HOME
+      value: /home/jenkins
+    - name: STORAGE_DRIVER
+      value: vfs
+    volumeMounts:
+    - name: workspace
+      mountPath: /home/jenkins/agent
+    - name: home
+      mountPath: /home/jenkins
+  volumes:
+  - name: workspace
+    persistentVolumeClaim:
+      claimName: jenkins-agent-workspace
+  - name: home
+    emptyDir: {}
+  - name: kaniko-secret
+    secret:
+      secretName: nexus-push-secret
+      items:
+      - key: .dockerconfigjson
+        path: config.json
+      '''
+    }
+  }
+  
+  parameters {
+    choice(
+      name: 'BUILD_METHOD',
+      choices: ['openshift-buildconfig', 'kaniko', 'buildah'],
+      description: 'Select the container image build method'
+    )
+  }
+  
+  environment {
+    APP_NS = 'petclinic-hungpq52'
+    NEXUS_REGISTRY = 'nexus.apps.s68'
+    IMAGE_NAME = 'petclinic'
+    IMAGE_TAG = "${BUILD_NUMBER}"
+    FULL_IMAGE = "${NEXUS_REGISTRY}/${IMAGE_NAME}:${IMAGE_TAG}"
+    LATEST_IMAGE = "${NEXUS_REGISTRY}/${IMAGE_NAME}:latest"
+  }
+  
+  stages {
+    stage('Checkout') {
+      steps {
+        echo '=== Checking out Spring Petclinic from GitHub ==='
+        git url: 'https://github.com/spring-projects/spring-petclinic', branch: 'main'
+      }
+    }
+    
+    stage('Maven Build') {
+      steps {
+        container('maven') {
+          echo '=== Building with Maven ==='
+          sh '''
+            mvn -version
+            mvn -B -DskipTests clean package
+          '''
+        }
+      }
+    }
+    
+    stage('Create Dockerfile') {
+      steps {
+        container('jnlp') {
+          echo '=== Creating Dockerfile ==='
+          sh '''
+            cat > Dockerfile << 'EOF'
+FROM registry.access.redhat.com/ubi8/openjdk-17:latest
+
+# Set working directory
+WORKDIR /app
+
+# Copy the JAR file
+COPY target/*.jar app.jar
+
+# Expose port
+EXPOSE 8080
+
+# Run the application
+ENTRYPOINT ["java", "-jar", "app.jar"]
+EOF
+            cat Dockerfile
+          '''
+        }
+      }
+    }
+    
+    stage('Build & Push Image') {
+      steps {
+        script {
+          def buildMethod = params.BUILD_METHOD ?: 'openshift-buildconfig'
+          echo "=== Selected build method: ${buildMethod} ==="
+          
+          switch(buildMethod) {
+            case 'openshift-buildconfig':
+              buildWithOpenShift()
+              break
+            case 'kaniko':
+              buildWithKaniko()
+              break
+            case 'buildah':
+              buildWithBuildah()
+              break
+            default:
+              error("Unknown build method: ${buildMethod}")
+          }
+        }
+      }
+    }
+    
+    stage('Deploy') {
+      steps {
+        container('jnlp') {
+          echo '=== Deploying to OpenShift ==='
+          sh """
+            # Update image if deployment exists, otherwise create new
+            if oc get deployment petclinic -n ${APP_NS} 2>/dev/null; then
+              echo "Updating existing deployment..."
+              oc set image deployment/petclinic petclinic=${FULL_IMAGE} -n ${APP_NS}
+              oc set image deployment/petclinic petclinic=${LATEST_IMAGE} -n ${APP_NS}
+            else
+              echo "Creating new deployment..."
+              oc new-app ${LATEST_IMAGE} --name=petclinic -n ${APP_NS}
+            fi
+            
+            # Expose service if not exists
+            oc expose svc/petclinic -n ${APP_NS} || echo "Route already exists"
+            
+            # Wait for rollout to complete
+            oc rollout status deployment/petclinic -n ${APP_NS} --timeout=5m
+          """
+        }
+      }
+    }
+    
+    stage('Verify') {
+      steps {
+        container('jnlp') {
+          echo '=== Verifying deployment ==='
+          sh """
+            # Get route URL
+            ROUTE=\$(oc get route petclinic -n ${APP_NS} -o jsonpath='{.spec.host}')
+            echo "Application URL: http://\${ROUTE}"
+            
+            # Wait for application to be ready
+            sleep 10
+            
+            # Test HTTP endpoint
+            HTTP_CODE=\$(curl -s -o /dev/null -w "%{http_code}" http://\${ROUTE}/)
+            echo "HTTP Response Code: \${HTTP_CODE}"
+            
+            if [ "\${HTTP_CODE}" = "200" ]; then
+              echo "✅ Application is accessible"
+            else
+              echo "❌ Application returned HTTP \${HTTP_CODE}"
+              exit 1
+            fi
+          """
+        }
+      }
+    }
+  }
+  
+  post {
+    always {
+      echo '=== Pipeline execution completed ==='
+      echo "Build Method: ${params.BUILD_METHOD}"
+      echo "Image: ${FULL_IMAGE}"
+    }
+    success {
+      echo '✅ Pipeline succeeded! Petclinic deployed successfully.'
+    }
+    failure {
+      echo '❌ Pipeline failed! Check logs for details.'
+    }
+  }
+}
+
+// ========== Build Method Functions ==========
+
+def buildWithOpenShift() {
+  container('jnlp') {
+    echo '=== Building with OpenShift BuildConfig (Buildah) ==='
+    sh """
+      oc version
+      oc project ${APP_NS}
+      
+      # Start build from current directory (contains Dockerfile and JAR)
+      oc start-build petclinic \\
+        --from-dir=. \\
+        --follow \\
+        --wait \\
+        -n ${APP_NS}
+      
+      echo "✅ Image pushed to ${LATEST_IMAGE}"
+      
+      # Tag with build number
+      oc tag ${IMAGE_NAME}:latest ${IMAGE_NAME}:${IMAGE_TAG} -n ${APP_NS}
+    """
+  }
+}
+
+def buildWithKaniko() {
+  container('kaniko') {
+    echo '=== Building with Kaniko ==='
+    sh """
+      /kaniko/executor \\
+        --context=\${PWD} \\
+        --dockerfile=Dockerfile \\
+        --destination=${FULL_IMAGE} \\
+        --destination=${LATEST_IMAGE} \\
+        --insecure \\
+        --skip-tls-verify \\
+        --cache=true \\
+        --cache-ttl=24h \\
+        --verbosity=info
+      
+      echo "✅ Image pushed to ${FULL_IMAGE}"
+      echo "✅ Image pushed to ${LATEST_IMAGE}"
+    """
+  }
+}
+
+def buildWithBuildah() {
+  container('buildah') {
+    echo '=== Building with Buildah ==='
+    sh """
+      # Build the image
+      buildah bud \\
+        --storage-driver=vfs \\
+        --format=docker \\
+        --tls-verify=false \\
+        -t ${FULL_IMAGE} \\
+        -t ${LATEST_IMAGE} \\
+        -f Dockerfile \\
+        .
+      
+      # Login to Nexus registry
+      buildah login \\
+        --tls-verify=false \\
+        --username=admin \\
+        --password=123456789 \\
+        ${NEXUS_REGISTRY}
+      
+      # Push both tags
+      buildah push \\
+        --tls-verify=false \\
+        ${FULL_IMAGE}
+      
+      buildah push \\
+        --tls-verify=false \\
+        ${LATEST_IMAGE}
+      
+      echo "✅ Image pushed to ${FULL_IMAGE}"
+      echo "✅ Image pushed to ${LATEST_IMAGE}"
+    """
+  }
+}

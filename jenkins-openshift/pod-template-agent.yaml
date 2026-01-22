@@ -69,11 +69,42 @@ spec:
     - name: home
       mountPath: /home/jenkins
   
+  # Kaniko container for building Docker images (daemonless)
+  - name: kaniko
+    image: gcr.io/kaniko-project/executor:debug
+    imagePullPolicy: IfNotPresent
+    command:
+    - /busybox/cat
+    tty: true
+    env:
+    - name: HOME
+      value: /home/jenkins
+    resources:
+      requests:
+        memory: "512Mi"
+        cpu: "500m"
+      limits:
+        memory: "1Gi"
+        cpu: "1000m"
+    volumeMounts:
+    - name: workspace
+      mountPath: /home/jenkins/agent
+    - name: home
+      mountPath: /home/jenkins
+    - name: kaniko-secret
+      mountPath: /kaniko/.docker
+  
   volumes:
   - name: workspace
     persistentVolumeClaim:
       claimName: jenkins-agent-workspace
   - name: home
     emptyDir: {}
+  - name: kaniko-secret
+    secret:
+      secretName: nexus-push-secret
+      items:
+      - key: .dockerconfigjson
+        path: config.json
   
   restartPolicy: Never

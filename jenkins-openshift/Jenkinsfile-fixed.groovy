@@ -36,28 +36,32 @@ spec:
       mountPath: /home/jenkins/agent
     - name: home
       mountPath: /home/jenkins
-  - name: kaniko
-    image: gcr.io/kaniko-project/executor:debug
-    command: ["/busybox/sleep"]
+  - name: buildah
+    image: quay.io/buildah/stable:latest
+    command: ["sleep"]
     args: ["99d"]
     tty: true
     workingDir: /home/jenkins/agent
     env:
     - name: HOME
       value: /home/jenkins
+    - name: STORAGE_DRIVER
+      value: vfs
+    - name: BUILDAH_ISOLATION
+      value: chroot
     volumeMounts:
     - name: workspace
       mountPath: /home/jenkins/agent
     - name: home
       mountPath: /home/jenkins
-    - name: kaniko-secret
-      mountPath: /kaniko/.docker
+    - name: buildah-secret
+      mountPath: /home/jenkins/.docker
   volumes:
   - name: workspace
     emptyDir: {}
   - name: home
     emptyDir: {}
-  - name: kaniko-secret
+  - name: buildah-secret
     secret:
       secretName: nexus-push-secret
       items:
@@ -100,26 +104,27 @@ spec:
     
     stage('Build & Push Image') {
       steps {
-        container('kaniko') {
+        container('buildah') {
           sh """
             echo "Current directory: \$(pwd)"
             echo "Files in workspace:"
             ls -la
             
-            # Verify /kaniko/executor exists
-            if [ ! -f /kaniko/executor ]; then
-              echo "ERROR: /kaniko/executor not found!"
-              exit 1
-            fi
+            # Build image with Buildah (rootless)
+            buildah bud \\
+              --storage-driver=vfs \\
+              --isolation=chroot \\
+              --tls-verify=false \\
+              -t ${FULL_IMAGE} \\
+              -f \$(pwd)/Dockerfile \\
+              \$(pwd)
             
-            # Run Kaniko executor
-            /kaniko/executor \\
-              --context=\$(pwd) \\
-              --dockerfile=\$(pwd)/Dockerfile \\
-              --destination=${FULL_IMAGE} \\
-              --skip-tls-verify \\
-              --insecure \\
-              --insecure-registry=${NEXUS_REGISTRY}
+            # Push image to registry
+            buildah push \\
+              --storage-driver=vfs \\
+              --tls-verify=false \\
+              --authfile=/home/jenkins/.docker/config.json \\
+              ${FULL_IMAGE}
             
             echo "✅ Image pushed to ${FULL_IMAGE}"
           """

@@ -52,8 +52,7 @@ spec:
       mountPath: /kaniko/.docker
   volumes:
   - name: workspace
-    persistentVolumeClaim:
-      claimName: jenkins-agent-workspace
+    emptyDir: {}
   - name: home
     emptyDir: {}
   - name: kaniko-secret

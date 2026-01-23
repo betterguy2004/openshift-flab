@@ -271,6 +271,41 @@
         </executions>
       </plugin>
 
+      <!-- Google Jib Plugin for containerization without Docker -->
+      <plugin>
+        <groupId>com.google.cloud.tools</groupId>
+        <artifactId>jib-maven-plugin</artifactId>
+        <version>3.4.4</version>
+        <configuration>
+          <from>
+            <image>eclipse-temurin:17-jre-jammy</image>
+          </from>
+          <to>
+            <image>nexus.apps.s68/petclinic</image>
+            <tags>
+              <tag>latest</tag>
+              <tag>${project.version}</tag>
+            </tags>
+            <auth>
+              <username>${env.NEXUS_USERNAME}</username>
+              <password>${env.NEXUS_PASSWORD}</password>
+            </auth>
+          </to>
+          <container>
+            <jvmFlags>
+              <jvmFlag>-Xms512m</jvmFlag>
+              <jvmFlag>-Xmx512m</jvmFlag>
+            </jvmFlags>
+            <ports>
+              <port>8080</port>
+            </ports>
+            <format>OCI</format>
+            <creationTime>USE_CURRENT_TIMESTAMP</creationTime>
+          </container>
+          <allowInsecureRegistries>true</allowInsecureRegistries>
+        </configuration>
+      </plugin>
+
       <!-- Spring Boot Actuator displays build-related information if a git.properties file is
       present at the classpath -->
       <plugin>

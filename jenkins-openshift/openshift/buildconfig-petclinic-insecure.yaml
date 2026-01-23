@@ -1,0 +1,32 @@
+---
+# BuildConfig for Spring Petclinic with Insecure Registry Support
+# Uses Docker strategy with Buildah internally
+# Configured to skip TLS verification for external registries
+apiVersion: build.openshift.io/v1
+kind: BuildConfig
+metadata:
+  name: petclinic
+  namespace: petclinic-hungpq52
+  labels:
+    app: petclinic
+spec:
+  source:
+    type: Binary
+  strategy:
+    type: Docker
+    dockerStrategy:
+      dockerfilePath: Dockerfile
+      # Enable verbose logging for debugging
+      env:
+        - name: BUILD_LOGLEVEL
+          value: "5"
+  output:
+    to:
+      kind: DockerImage
+      name: nexus.apps.s68/petclinic:latest
+    pushSecret:
+      name: nexus-push-secret
+  # Allow insecure registry access (for dev/test environments)
+  # This bypasses TLS certificate verification
+  nodeSelector:
+    node-role.kubernetes.io/worker: ""

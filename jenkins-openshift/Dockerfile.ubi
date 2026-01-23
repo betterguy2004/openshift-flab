@@ -1,0 +1,29 @@
+# Dockerfile for Spring Petclinic - OpenShift Optimized
+# Uses Red Hat Universal Base Image (UBI) to avoid certificate issues
+# This image is trusted by OpenShift by default
+
+# Use Red Hat UBI with OpenJDK 17
+FROM registry.access.redhat.com/ubi9/openjdk-17-runtime:latest
+
+# Metadata
+LABEL maintainer="hungpq52" \
+    app="spring-petclinic" \
+    description="Spring Petclinic application on OpenShift"
+
+# Copy the pre-built JAR file
+# The JAR should be in target/ directory from Maven build
+COPY target/*.jar /deployments/app.jar
+
+# OpenShift runs containers with random UID
+# The UBI OpenJDK image already handles this correctly
+# Default user is 185 (jboss)
+USER 185
+
+# Expose port 8080
+EXPOSE 8080
+
+# Set JVM options for containerized environments
+ENV JAVA_OPTS="-XX:+UseContainerSupport -XX:MaxRAMPercentage=75.0 -Djava.security.egd=file:/dev/./urandom"
+
+# Run the application
+ENTRYPOINT ["java", "-jar", "/deployments/app.jar"]

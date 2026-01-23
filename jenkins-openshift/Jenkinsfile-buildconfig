@@ -1,0 +1,283 @@
+// Jenkins Pipeline for Spring Petclinic on OpenShift
+// Uses BuildConfig for image building (OpenShift-native approach)
+// Solves: Buildah user namespace issues, Kaniko permission issues
+pipeline {
+  agent {
+    kubernetes {
+      namespace 'jenkins-agents-hungpq52'
+      yaml '''
+apiVersion: v1
+kind: Pod
+spec:
+  serviceAccountName: jenkins-agent
+  imagePullSecrets:
+    - name: redhat-pull-secret
+  containers:
+  - name: jnlp
+    image: registry.redhat.io/ocp-tools-4/jenkins-agent-base-rhel8:latest
+    env:
+    - name: HOME
+      value: /home/jenkins
+    volumeMounts:
+    - name: workspace
+      mountPath: /home/jenkins/agent
+    - name: home
+      mountPath: /home/jenkins
+  - name: maven
+    image: maven:3.9-eclipse-temurin-17
+    command: ["cat"]
+    tty: true
+    env:
+    - name: HOME
+      value: /home/jenkins
+    - name: MAVEN_OPTS
+      value: "-Dmaven.repo.local=/home/jenkins/.m2/repository"
+    volumeMounts:
+    - name: workspace
+      mountPath: /home/jenkins/agent
+    - name: home
+      mountPath: /home/jenkins
+  volumes:
+  - name: workspace
+    persistentVolumeClaim:
+      claimName: jenkins-agent-workspace
+  - name: home
+    emptyDir: {}
+      '''
+    }
+  }
+  
+  environment {
+    APP_NS = 'petclinic-hungpq52'
+    NEXUS_REGISTRY = 'nexus.apps.s68'
+    IMAGE_NAME = 'petclinic'
+    IMAGE_TAG = "${BUILD_NUMBER}"
+    FULL_IMAGE = "${NEXUS_REGISTRY}/${IMAGE_NAME}:${IMAGE_TAG}"
+    SOURCE_REPO = 'https://github.com/spring-projects/spring-petclinic'
+    SOURCE_BRANCH = 'main'
+  }
+  
+  stages {
+    stage('Checkout') {
+      steps {
+        echo '=== Checking out Spring Petclinic from GitHub ==='
+        git url: "${SOURCE_REPO}", branch: "${SOURCE_BRANCH}"
+      }
+    }
+    
+    stage('Maven Build') {
+      steps {
+        container('maven') {
+          echo '=== Building with Maven ==='
+          sh '''
+            mvn -version
+            echo "Building Spring Petclinic..."
+            mvn -B -DskipTests clean package
+            
+            # Verify JAR was created
+            ls -lh target/*.jar
+          '''
+        }
+      }
+    }
+    
+    stage('Prepare Build Context') {
+      steps {
+        container('jnlp') {
+          echo '=== Preparing build context for OpenShift BuildConfig ==='
+          sh '''
+            # Create a simple Dockerfile optimized for pre-built JAR
+            cat > Dockerfile << 'EOF'
+# Optimized Dockerfile for Spring Petclinic
+# Uses Red Hat UBI to avoid certificate issues
+FROM registry.access.redhat.com/ubi9/openjdk-17-runtime:latest
+
+# Copy pre-built JAR
+COPY target/*.jar /deployments/app.jar
+
+# OpenShift runs as random UID, ensure permissions
+USER 185
+
+# Expose port
+EXPOSE 8080
+
+# Run the application
+ENTRYPOINT ["java", "-jar", "/deployments/app.jar"]
+EOF
+            
+            echo "Dockerfile created:"
+            cat Dockerfile
+            
+            # Verify build context
+            echo "Build context contents:"
+            ls -lh target/
+          '''
+        }
+      }
+    }
+    
+    stage('Build & Push Image') {
+      steps {
+        container('jnlp') {
+          echo '=== Building and pushing image via OpenShift BuildConfig ==='
+          sh """
+            oc version
+            
+            # Ensure we're in the correct namespace
+            oc project ${APP_NS}
+            
+            # Check if BuildConfig exists, create if not
+            if ! oc get bc ${IMAGE_NAME} -n ${APP_NS} &>/dev/null; then
+              echo "Creating BuildConfig..."
+              cat <<EOF | oc apply -f -
+apiVersion: build.openshift.io/v1
+kind: BuildConfig
+metadata:
+  name: ${IMAGE_NAME}
+  namespace: ${APP_NS}
+  labels:
+    app: ${IMAGE_NAME}
+spec:
+  source:
+    type: Binary
+  strategy:
+    type: Docker
+    dockerStrategy:
+      dockerfilePath: Dockerfile
+  output:
+    to:
+      kind: DockerImage
+      name: ${FULL_IMAGE}
+    pushSecret:
+      name: nexus-push-secret
+EOF
+            else
+              echo "BuildConfig already exists"
+            fi
+            
+            # Start the build from current directory
+            echo "Starting build from directory: \$(pwd)"
+            oc start-build ${IMAGE_NAME} \\
+              --from-dir=. \\
+              --follow \\
+              --wait \\
+              -n ${APP_NS}
+            
+            # Tag as latest as well
+            oc tag ${FULL_IMAGE} ${IMAGE_NAME}:latest -n ${APP_NS} || true
+            
+            echo "✅ Image built and pushed: ${FULL_IMAGE}"
+          """
+        }
+      }
+    }
+    
+    stage('Deploy') {
+      steps {
+        container('jnlp') {
+          echo '=== Deploying to OpenShift ==='
+          sh """
+            # Check if deployment exists
+            if ! oc get deployment ${IMAGE_NAME} -n ${APP_NS} &>/dev/null; then
+              echo "Creating new deployment..."
+              oc new-app ${FULL_IMAGE} \\
+                --name=${IMAGE_NAME} \\
+                -n ${APP_NS}
+              
+              # Expose service
+              oc expose svc/${IMAGE_NAME} -n ${APP_NS}
+            else
+              echo "Updating existing deployment..."
+              oc set image deployment/${IMAGE_NAME} \\
+                ${IMAGE_NAME}=${FULL_IMAGE} \\
+                -n ${APP_NS}
+            fi
+            
+            # Wait for rollout to complete
+            echo "Waiting for rollout to complete..."
+            oc rollout status deployment/${IMAGE_NAME} -n ${APP_NS} --timeout=5m
+          """
+        }
+      }
+    }
+    
+    stage('Verify') {
+      steps {
+        container('jnlp') {
+          echo '=== Verifying deployment ==='
+          sh """
+            # Get deployment status
+            oc get deployment ${IMAGE_NAME} -n ${APP_NS}
+            oc get pods -l app=${IMAGE_NAME} -n ${APP_NS}
+            
+            # Get route URL
+            ROUTE=\$(oc get route ${IMAGE_NAME} -n ${APP_NS} -o jsonpath='{.spec.host}' 2>/dev/null || echo "")
+            
+            if [ -z "\${ROUTE}" ]; then
+              echo "⚠️  No route found. Creating route..."
+              oc expose svc/${IMAGE_NAME} -n ${APP_NS}
+              ROUTE=\$(oc get route ${IMAGE_NAME} -n ${APP_NS} -o jsonpath='{.spec.host}')
+            fi
+            
+            echo "Application URL: http://\${ROUTE}"
+            
+            # Wait for pods to be ready
+            echo "Waiting for pods to be ready..."
+            oc wait --for=condition=Ready pod -l app=${IMAGE_NAME} -n ${APP_NS} --timeout=300s
+            
+            # Test HTTP endpoint
+            echo "Testing application endpoint..."
+            sleep 15
+            
+            HTTP_CODE=\$(curl -s -o /dev/null -w "%{http_code}" http://\${ROUTE}/ || echo "000")
+            echo "HTTP Response Code: \${HTTP_CODE}"
+            
+            if [ "\${HTTP_CODE}" = "200" ]; then
+              echo "✅ Application is accessible at http://\${ROUTE}"
+            else
+              echo "⚠️  Application returned HTTP \${HTTP_CODE}"
+              echo "Checking pod logs..."
+              oc logs -l app=${IMAGE_NAME} -n ${APP_NS} --tail=50
+            fi
+          """
+        }
+      }
+    }
+  }
+  
+  post {
+    always {
+      echo '=== Pipeline execution completed ==='
+      container('jnlp') {
+        sh """
+          echo "Build Summary:"
+          echo "  Image: ${FULL_IMAGE}"
+          echo "  Namespace: ${APP_NS}"
+          echo "  Build Number: ${BUILD_NUMBER}"
+          
+          # Show recent builds
+          oc get builds -n ${APP_NS} | tail -5
+        """
+      }
+    }
+    success {
+      echo '✅ Pipeline succeeded! Petclinic deployed successfully.'
+    }
+    failure {
+      echo '❌ Pipeline failed! Check logs for details.'
+      container('jnlp') {
+        sh """
+          echo "Debugging information:"
+          oc get all -l app=${IMAGE_NAME} -n ${APP_NS}
+          
+          # Show build logs if build failed
+          LAST_BUILD=\$(oc get builds -n ${APP_NS} --sort-by=.metadata.creationTimestamp -o name | tail -1)
+          if [ -n "\${LAST_BUILD}" ]; then
+            echo "Last build logs:"
+            oc logs \${LAST_BUILD} -n ${APP_NS} --tail=100
+          fi
+        """
+      }
+    }
+  }
+}

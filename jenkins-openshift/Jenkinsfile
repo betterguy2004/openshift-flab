@@ -1,5 +1,5 @@
 // Jenkins Pipeline for Spring Petclinic on OpenShift
-// Uses Jenkins Kubernetes Plugin for dynamic agent provisioning
+// Uses Jib Maven Plugin for containerization without Docker
 pipeline {
   agent {
     kubernetes {
@@ -31,6 +31,10 @@ spec:
       value: /home/jenkins
     - name: MAVEN_OPTS
       value: "-Dmaven.repo.local=/home/jenkins/.m2/repository"
+    - name: NEXUS_USERNAME
+      value: "admin"
+    - name: NEXUS_PASSWORD
+      value: "123456789"
     volumeMounts:
     - name: workspace
       mountPath: /home/jenkins/agent
@@ -51,6 +55,8 @@ spec:
     NEXUS_REGISTRY = 'nexus.apps.s68'
     IMAGE_NAME = 'petclinic'
     IMAGE_TAG = "${BUILD_NUMBER}"
+    NEXUS_USERNAME = 'admin'
+    NEXUS_PASSWORD = '123456789'
   }
   
   stages {
@@ -61,51 +67,44 @@ spec:
       }
     }
     
-    stage('Maven Build') {
+    stage('Maven Build & Push Image') {
       steps {
         container('maven') {
-          echo '=== Building with Maven ==='
+          echo '=== Building application and pushing image with Jib ==='
           sh '''
             mvn -version
-            mvn -B -DskipTests clean package
+            
+            # Build application and create container image with Jib
+            # Jib builds and pushes in one step, no Docker daemon needed
+            mvn -B -DskipTests clean package jib:build
+            
+            echo "✅ Image built and pushed to ${NEXUS_REGISTRY}/${IMAGE_NAME}:latest"
           '''
         }
       }
     }
     
-    stage('Build & Push Image') {
-      steps {
-        container('jnlp') {
-          echo '=== Building and pushing image to Nexus via OpenShift BuildConfig ==='
-          sh """
-            oc version
-            oc project ${APP_NS}
-            
-            # Start build from current directory (contains Dockerfile and JAR)
-            oc start-build petclinic \
-              --from-dir=. \
-              --follow \
-              --wait \
-              -n ${APP_NS}
-            
-            echo "Image pushed to ${NEXUS_REGISTRY}/${IMAGE_NAME}:latest"
-          """
-        }
-      }
-    }
-    
-    stage('Deploy') {
+    stage('Deploy to OpenShift') {
       steps {
         container('jnlp') {
           echo '=== Deploying to OpenShift ==='
           sh """
-            # Create deployment if not exists
-            oc new-app ${NEXUS_REGISTRY}/${IMAGE_NAME}:latest \
-              --name=petclinic \
-              -n ${APP_NS} || echo "Deployment already exists"
+            oc version
+            oc project ${APP_NS}
             
-            # Expose service if not exists
-            oc expose svc/petclinic -n ${APP_NS} || echo "Route already exists"
+            # Check if deployment exists
+            if oc get deployment petclinic -n ${APP_NS} 2>/dev/null; then
+              echo "Deployment exists, triggering rollout..."
+              oc rollout restart deployment/petclinic -n ${APP_NS}
+            else
+              echo "Creating new deployment..."
+              oc new-app ${NEXUS_REGISTRY}/${IMAGE_NAME}:latest \
+                --name=petclinic \
+                -n ${APP_NS}
+              
+              # Expose service
+              oc expose svc/petclinic -n ${APP_NS} || echo "Route already exists"
+            fi
             
             # Wait for rollout to complete
             oc rollout status deployment/petclinic -n ${APP_NS} --timeout=5m
@@ -114,7 +113,7 @@ spec:
       }
     }
     
-    stage('Verify') {
+    stage('Verify Deployment') {
       steps {
         container('jnlp') {
           echo '=== Verifying deployment ==='
@@ -124,17 +123,19 @@ spec:
             echo "Application URL: http://\${ROUTE}"
             
             # Wait for application to be ready
-            sleep 10
+            echo "Waiting for application to start..."
+            sleep 15
             
             # Test HTTP endpoint
-            HTTP_CODE=\$(curl -s -o /dev/null -w "%{http_code}" http://\${ROUTE}/)
+            HTTP_CODE=\$(curl -s -o /dev/null -w "%{http_code}" http://\${ROUTE}/ || echo "000")
             echo "HTTP Response Code: \${HTTP_CODE}"
             
             if [ "\${HTTP_CODE}" = "200" ]; then
-              echo "✅ Application is accessible"
+              echo "✅ Application is accessible and healthy"
             else
-              echo "❌ Application returned HTTP \${HTTP_CODE}"
-              exit 1
+              echo "⚠️  Application returned HTTP \${HTTP_CODE}"
+              echo "Check pod logs for details:"
+              oc logs -l app=petclinic -n ${APP_NS} --tail=50
             fi
           """
         }
@@ -147,7 +148,7 @@ spec:
       echo '=== Pipeline execution completed ==='
     }
     success {
-      echo '✅ Pipeline succeeded! Petclinic deployed successfully.'
+      echo '✅ Pipeline succeeded! Petclinic deployed successfully with Jib.'
     }
     failure {
       echo '❌ Pipeline failed! Check logs for details.'

@@ -1,5 +1,6 @@
 // Jenkins Pipeline for Spring Petclinic on OpenShift
 // Uses Jenkins Kubernetes Plugin with inline pod template
+// Uses Kaniko for container image build (requires anyuid SCC for jenkins-agent SA)
 pipeline {
   agent {
     kubernetes {
@@ -23,7 +24,7 @@ spec:
     - name: home
       mountPath: /home/jenkins
   - name: maven
-    image: maven:3.9-eclipse-temurin-25
+    image: maven:3.9-eclipse-temurin-17
     command: ["cat"]
     tty: true
     env:
@@ -36,32 +37,30 @@ spec:
       mountPath: /home/jenkins/agent
     - name: home
       mountPath: /home/jenkins
-  - name: buildah
-    image: quay.io/buildah/stable:v1.40
-    command: ["sleep"]
+  - name: kaniko
+    image: gcr.io/kaniko-project/executor:debug
+    command: ["/busybox/sleep"]
     args: ["99d"]
     tty: true
     workingDir: /home/jenkins/agent
+    securityContext:
+      runAsUser: 0
     env:
     - name: HOME
       value: /home/jenkins
-    - name: STORAGE_DRIVER
-      value: vfs
-    - name: BUILDAH_ISOLATION
-      value: chroot
     volumeMounts:
     - name: workspace
       mountPath: /home/jenkins/agent
     - name: home
       mountPath: /home/jenkins
-    - name: buildah-secret
-      mountPath: /home/jenkins/.docker
+    - name: kaniko-secret
+      mountPath: /kaniko/.docker
   volumes:
   - name: workspace
     emptyDir: {}
   - name: home
     emptyDir: {}
-  - name: buildah-secret
+  - name: kaniko-secret
     secret:
       secretName: nexus-push-secret
       items:
@@ -104,28 +103,24 @@ spec:
     
     stage('Build & Push Image') {
       steps {
-        container('buildah') {
+        container('kaniko') {
           sh """
             echo "Current directory: \$(pwd)"
             echo "Files in workspace:"
             ls -la
             
-            # Build image with Buildah (rootless)
-            buildah bud \\
-              --storage-driver=vfs \\
-              --isolation=chroot \\
-              --tls-verify=false \\
-              -t ${FULL_IMAGE} \\
-              -f \$(pwd)/Dockerfile \\
-              \$(pwd)
+            # Run Kaniko executor with TLS verification disabled for pull and push
+            /kaniko/executor \\
+              --context=\$(pwd) \\
+              --dockerfile=\$(pwd)/Dockerfile \\
+              --destination=${FULL_IMAGE} \\
+              --skip-tls-verify \\
+              --skip-tls-verify-pull \\
+              --insecure \\
+              --insecure-pull \\
+              --insecure-registry=${NEXUS_REGISTRY}
             
-            # Push image to registry
-            buildah push \\
-              --storage-driver=vfs \\
-              --tls-verify=false \\
-              --authfile=/home/jenkins/.docker/config.json \\
-              ${FULL_IMAGE}
-            
+            echo "✅ Image pushed to ${FULL_IMAGE}"
           """
         }
       }

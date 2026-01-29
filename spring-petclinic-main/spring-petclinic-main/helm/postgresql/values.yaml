@@ -1,0 +1,170 @@
+# Custom values for PostgreSQL database
+# Based on k8s/db.yml manifest
+
+# Replica count
+replicaCount: 1
+
+# Container image configuration
+image:
+  repository: postgres
+  pullPolicy: IfNotPresent
+  # PostgreSQL version
+  tag: "18.1"
+
+# Image pull secrets
+imagePullSecrets: []
+
+# Override chart name
+nameOverride: "demo-db"
+fullnameOverride: "demo-db"
+
+# Service Account configuration
+serviceAccount:
+  create: true
+  automount: true
+  annotations: {}
+  name: ""
+
+# Pod annotations and labels
+podAnnotations: {}
+podLabels:
+  app: demo-db
+
+# Security contexts
+podSecurityContext: {}
+securityContext: {}
+
+# Service configuration
+service:
+  type: ClusterIP
+  port: 5432
+  targetPort: 5432
+
+# Container port
+containerPort: 5432
+
+# PostgreSQL database credentials
+# These will be stored in a Secret
+postgresql:
+  # Database name
+  database: petclinic
+  # Database username
+  username: user
+  # Database password
+  password: pass
+  # Service binding type
+  type: postgresql
+  provider: postgresql
+
+# Secret configuration
+secret:
+  # Name of the secret
+  name: demo-db
+  # Secret type for service binding
+  type: servicebinding.io/postgresql
+  # Create secret from values
+  create: true
+
+# Environment variables (populated from secret)
+env:
+  - name: POSTGRES_USER
+    valueFrom:
+      secretKeyRef:
+        name: demo-db
+        key: username
+  - name: POSTGRES_PASSWORD
+    valueFrom:
+      secretKeyRef:
+        name: demo-db
+        key: password
+  - name: POSTGRES_DB
+    valueFrom:
+      secretKeyRef:
+        name: demo-db
+        key: database
+
+# Ingress configuration (disabled for database)
+ingress:
+  enabled: false
+  className: ""
+  annotations: {}
+  hosts:
+    - host: db.local
+      paths:
+        - path: /
+          pathType: ImplementationSpecific
+  tls: []
+
+# HTTPRoute configuration (disabled)
+httpRoute:
+  enabled: false
+  annotations: {}
+  parentRefs:
+  - name: gateway
+    sectionName: http
+  hostnames:
+  - db.local
+  rules:
+  - matches:
+    - path:
+        type: PathPrefix
+        value: /
+
+# Resource limits and requests
+resources: {}
+  # limits:
+  #   cpu: 500m
+  #   memory: 512Mi
+  # requests:
+  #   cpu: 250m
+  #   memory: 256Mi
+
+# Liveness, Readiness, and Startup probes
+livenessProbe:
+  tcpSocket:
+    port: postgresql
+  initialDelaySeconds: 30
+  periodSeconds: 10
+
+readinessProbe:
+  tcpSocket:
+    port: postgresql
+  initialDelaySeconds: 5
+  periodSeconds: 5
+
+startupProbe:
+  tcpSocket:
+    port: postgresql
+  initialDelaySeconds: 10
+  periodSeconds: 5
+  failureThreshold: 30
+
+# Autoscaling (disabled for database)
+autoscaling:
+  enabled: false
+  minReplicas: 1
+  maxReplicas: 1
+  targetCPUUtilizationPercentage: 80
+
+# Persistent storage configuration
+persistence:
+  enabled: false
+  # storageClass: ""
+  # accessMode: ReadWriteOnce
+  # size: 8Gi
+  # mountPath: /var/lib/postgresql/data
+
+# Additional volumes
+volumes: []
+
+# Additional volume mounts
+volumeMounts: []
+
+# Node selector
+nodeSelector: {}
+
+# Tolerations
+tolerations: []
+
+# Affinity rules
+affinity: {}

@@ -1,0 +1,139 @@
+# Custom values for Spring Petclinic application
+# Based on k8s/petclinic.yml manifest
+
+# Replica count
+replicaCount: 1
+
+# Container image configuration
+image:
+  repository: dsyer/petclinic
+  pullPolicy: IfNotPresent
+  # Overrides the image tag whose default is the chart appVersion
+  tag: ""
+
+# Image pull secrets for private registries
+imagePullSecrets: []
+
+# Override chart name
+nameOverride: "petclinic"
+fullnameOverride: "petclinic"
+
+# Service Account configuration
+serviceAccount:
+  create: true
+  automount: true
+  annotations: {}
+  name: ""
+
+# Pod annotations and labels
+podAnnotations: {}
+podLabels:
+  app: petclinic
+
+# Security contexts
+podSecurityContext: {}
+securityContext: {}
+
+# Service configuration
+service:
+  type: NodePort
+  port: 80
+  targetPort: 8080
+
+# Container configuration
+containerPort: 8080
+
+# Environment variables for Spring Boot
+env:
+  - name: SPRING_PROFILES_ACTIVE
+    value: postgres
+  - name: SERVICE_BINDING_ROOT
+    value: /bindings
+
+# Ingress configuration (disabled by default, using NodePort)
+ingress:
+  enabled: false
+  className: ""
+  annotations: {}
+  hosts:
+    - host: petclinic.local
+      paths:
+        - path: /
+          pathType: ImplementationSpecific
+  tls: []
+
+# HTTPRoute configuration (disabled)
+httpRoute:
+  enabled: false
+  annotations: {}
+  parentRefs:
+  - name: gateway
+    sectionName: http
+  hostnames:
+  - petclinic.local
+  rules:
+  - matches:
+    - path:
+        type: PathPrefix
+        value: /
+
+# Resource limits and requests
+resources: {}
+  # limits:
+  #   cpu: 500m
+  #   memory: 512Mi
+  # requests:
+  #   cpu: 250m
+  #   memory: 256Mi
+
+# Liveness and Readiness probes
+livenessProbe:
+  httpGet:
+    path: /livez
+    port: http
+  initialDelaySeconds: 30
+  periodSeconds: 10
+
+readinessProbe:
+  httpGet:
+    path: /readyz
+    port: http
+  initialDelaySeconds: 20
+  periodSeconds: 5
+
+# Autoscaling configuration
+autoscaling:
+  enabled: false
+  minReplicas: 1
+  maxReplicas: 3
+  targetCPUUtilizationPercentage: 80
+
+# Volume configuration for database binding
+volumes:
+  - name: binding
+    projected:
+      sources:
+        - secret:
+            name: demo-db
+
+# Volume mounts for database credentials
+volumeMounts:
+  - name: binding
+    mountPath: /bindings/secret
+    readOnly: true
+
+# Node selector
+nodeSelector: {}
+
+# Tolerations
+tolerations: []
+
+# Affinity rules
+affinity: {}
+
+# Database connection configuration
+database:
+  # Name of the secret containing database credentials
+  secretName: demo-db
+  # Binding mount path
+  bindingPath: /bindings/secret
